@@ -21,6 +21,8 @@ void wifi_init(void);
 
 void temp_sensor_init(void);
 void update_temp_sensor(void);
+void heart_rate_and_ox_sensor_init(void);
+void update_heart_rate_and_ox_sensor(void);
 
 // LOG打印
 #define LOG_ERR         1
@@ -43,11 +45,14 @@ static void time_work(void);
 static void update_date_time(void);
 
 // health status
-#define MAX_BODY_TEMP           50
-#define MIN_BODY_TEMP           0
+#define MAX_BODY_TEMP               50
+#define MIN_BODY_TEMP               0
 
-#define MAX_OXYGEN_SATURATION   100
-#define MIN_OXYGEN_SATURATION   0
+#define MAX_OXYGEN_SATURATION       100
+#define MIN_OXYGEN_SATURATION       0
+
+#define MAX_HEART_RATE              200
+#define MIN_HEART_RATE              0
 
 class health_status
 {
@@ -56,10 +61,13 @@ public:
     double  hs_get_body_temperature(void);
     void    hs_set_Oxygen_saturation(int ox);
     int     hs_get_Oxygen_saturation(void);
+    void    hs_set_heart_rate(int hr);
+    int     hs_get_heart_rate(void);
 
 private:
     double body_temperature = 0;
     int Oxygen_saturation = 0;
+    int heart_rate = 0;
 };
 
 

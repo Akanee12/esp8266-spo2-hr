@@ -1,27 +1,48 @@
 #include "header.h"
+#include "algorithm_by_RF.h"
+#include "max30102.h"
 
 using namespace std;
 
+// Wifi
 const char* ssid     = SSID;
 const char* password = PSWD;
 
+// OLED
 Adafruit_SSD1306 oled(128, 64, &Wire, -1);
 
+// 温度传感器
 Ticker timer_temp_read;
-double ambient_temp = 0.0;
+double ambient_temp = 0;
 Adafruit_MLX90614 temp_sensor = Adafruit_MLX90614();
 
+// 时间
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, DEFAULT_NTP_SERVER); //NTP地址
-
 Ticker timer_timework;
 struct tm ptm;
 bool is_need_update = false;
 
+// OLED
 Ticker timer_oled_display;
 bool is_display_data_available = false;
 
+// 健康状况对象
 health_status status;
+
+// 心率血氧传感器
+const unsigned char oxiInt = D0; // pin connected to MAX30102 INT
+
+uint32_t elapsedTime, timeStart;
+
+uint32_t aun_ir, aun_red;
+uint32_t aun_ir_buffer[BUFFER_SIZE];  // infrared LED sensor data
+uint32_t aun_red_buffer[BUFFER_SIZE]; // red LED sensor data
+float old_n_spo2;                     // Previous SPO2 value
+uint8_t uch_dummy;
+bool showMeasuring = false;
+Ticker timer_hr_ox_read;
+
 
 void setup()
 {
@@ -36,6 +57,7 @@ void setup()
 
     wifi_init();
     temp_sensor_init();
+    heart_rate_and_ox_sensor_init();
 
     oled.setCursor(2, 35);//设置显示位置
     oled.println("Connected,IP address:");
@@ -46,8 +68,6 @@ void setup()
     date_time_init();
 
     timer_oled_display.attach_ms(500, update_oled_display_buf);
-
-    delay(3000);
 }
 
 void loop()
@@ -63,6 +83,8 @@ void loop()
         oled.display();
         is_display_data_available = false;
     }
+
+    update_heart_rate_and_ox_sensor();
 }
 
 
@@ -115,10 +137,36 @@ void temp_sensor_init(void)
 }
 
 
+void heart_rate_and_ox_sensor_init(void)
+{
+    pinMode(oxiInt, INPUT);
+
+    while (!maxim_max30102_reset())
+    {
+        print_serial_log(LOG_ERR, "Error reseting hr_ox sensor.");
+        delay(500);
+    }
+
+    while (!maxim_max30102_read_reg(REG_INTR_STATUS_1, &uch_dummy))
+    {
+        print_serial_log(LOG_ERR, "Error reading hr_ox sensor's reg.");
+        delay(500);
+    }
+
+    while (!maxim_max30102_init())
+    {
+        print_serial_log(LOG_ERR, "Error initing hr_ox sensor.");
+        delay(500);
+    }
+
+    // timer_hr_ox_read.attach_ms(100, update_heart_rate_and_ox_sensor);
+
+    old_n_spo2 = 0.0;
+    timeStart = millis();
+}
+
 
 // LOG 打印
-
-
 
 template <class T>
 void print_serial_log(unsigned char type, T message)
@@ -234,12 +282,110 @@ void update_temp_sensor(void)
     return;
 }
 
+void update_heart_rate_and_ox_sensor(void)
+{
+    // if (!digitalRead(oxiInt))
+    // {
+    //     Serial.println("hr_ox sensor data not ready");
+    //     return;
+    // }
+
+    #define REVERSE_LED
+    // Serial.println("looping");
+    float n_spo2, ratio, correl; // SPO2 value
+    int8_t ch_spo2_valid;        // indicator to show if the SPO2 calculation is valid
+    int32_t n_heartrate;         // heart rate value
+    int8_t ch_hr_valid;          // indicator to show if the heart rate calculation is valid
+    int32_t i;
+
+    bool measuring_display = false;
+
+    // buffer length of BUFFER_SIZE stores ST seconds of samples running at FS sps
+    // read BUFFER_SIZE samples, and determine the signal range
+    for (i = 0; i < BUFFER_SIZE; i++)
+    {
+        while (digitalRead(oxiInt) == 1)
+        ; // wait until the interrupt pin asserts
+        delay(1);
+        // wdt_reset();
+    #ifdef REVERSE_LED
+        maxim_max30102_read_fifo(&aun_ir, &aun_red); // read from MAX30102 FIFO
+    #else
+        maxim_max30102_read_fifo(&aun_red, &aun_ir); // read from MAX30102 FIFO
+    #endif
+        if (aun_ir < 5000)
+        {
+            break;
+        }
+
+        if (i == 0)
+        {
+            if (showMeasuring)
+            {
+                // print_measuring();
+                showMeasuring = false;
+            }
+            // Serial.println("Measuring...");
+        }
+
+        measuring_display = true;
+
+        *(aun_ir_buffer + i) = aun_ir;
+        *(aun_red_buffer + i) = aun_red;
+    }
+
+    if (aun_ir < 5000)
+    {
+        // print_press();
+        showMeasuring = true;
+        // Serial.println("Put On Finger");
+    }
+    else
+    {
+        // calculate heart rate and SpO2 after BUFFER_SIZE samples (ST seconds of samples) using Robert's method
+        rf_heart_rate_and_oxygen_saturation(aun_ir_buffer, BUFFER_SIZE, aun_red_buffer, &n_spo2, &ch_spo2_valid, &n_heartrate, &ch_hr_valid, &ratio, &correl);
+        // Serial.println("rf_heart_rate_and_oxygen_saturation");
+        elapsedTime = millis() - timeStart;
+        elapsedTime /= 1000; // Time in seconds
+
+        if (ch_hr_valid && ch_spo2_valid)
+        {
+            Serial.print(elapsedTime);
+            Serial.print("\t");
+            Serial.print(n_spo2);
+            Serial.print("\t");
+            Serial.print(n_heartrate, DEC);
+            Serial.print("\t");
+            Serial.print(ratio);
+            Serial.print("\t");
+            Serial.print(correl);
+            Serial.println("");
+
+            // print_hr_spo2(n_heartrate, (int)(n_spo2+0.5));
+            old_n_spo2 = n_spo2;
+
+            status.hs_set_heart_rate(n_heartrate);
+            status.hs_set_Oxygen_saturation(n_spo2);
+        }
+    }
+
+    update_oled_display_buf();
+
+    if (measuring_display)
+    {
+        oled.println();
+        oled.print("      Measuring...");
+    }
+
+    oled.display();
+}
+
 
 
 // health status
 void health_status::hs_set_body_temperature(double temp)
 {
-    if (temp < MAX_BODY_TEMP && temp > MIN_BODY_TEMP)
+    if (temp < MAX_BODY_TEMP + 1 && temp > MIN_BODY_TEMP - 1)
     {
         body_temperature = temp;
         print_serial_log(LOG_INFO, "Successfully set body temperature");
@@ -258,9 +404,11 @@ double health_status::hs_get_body_temperature(void)
     return body_temperature;
 }
 
+
+
 void health_status::hs_set_Oxygen_saturation(int ox)
 {
-    if (ox < MAX_OXYGEN_SATURATION && ox > MIN_OXYGEN_SATURATION)
+    if (ox < MAX_OXYGEN_SATURATION + 1 && ox > MIN_OXYGEN_SATURATION - 1)
     {
         Oxygen_saturation = ox;
         print_serial_log(LOG_INFO, "Successfully set Oxygen saturation");
@@ -281,6 +429,29 @@ int health_status::hs_get_Oxygen_saturation(void)
 
 
 
+void health_status::hs_set_heart_rate(int hr)
+{
+    if (hr < MAX_HEART_RATE + 1 && hr > MIN_HEART_RATE - 1)
+    {
+        heart_rate = hr;
+        print_serial_log(LOG_INFO, "Successfully set heart rate");
+        print_serial_log(LOG_INFO, hr);
+    }
+    else
+    {
+        print_serial_log(LOG_WARN, "invalid value of heart rate");
+    }
+
+    return;
+}
+
+int health_status::hs_get_heart_rate(void)
+{
+    return heart_rate;
+}
+
+
+
 // oled更新
 void update_oled_display_buf(void)
 {
@@ -291,10 +462,16 @@ void update_oled_display_buf(void)
     oled.println(get_date_time());
     oled.println();
 
-    oled.print("Ambient: "); oled.println(ambient_temp);
+    oled.print("Amb:"); oled.print(ambient_temp);
+    oled.print("  ");
+
+    oled.print("Obj:"); oled.println(status.hs_get_body_temperature());
     oled.println();
 
-    oled.print("Object: "); oled.println(status.hs_get_body_temperature());
+    oled.print("HR:"); oled.print(status.hs_get_heart_rate());
+    oled.print("  ");
+
+    oled.print("SpO2:"); oled.print(status.hs_get_Oxygen_saturation());
     oled.println();
 
     is_display_data_available = true;
