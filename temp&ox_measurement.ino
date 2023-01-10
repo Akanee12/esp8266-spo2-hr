@@ -38,7 +38,8 @@ uint32_t elapsedTime, timeStart;
 uint32_t aun_ir, aun_red;
 uint32_t aun_ir_buffer[BUFFER_SIZE];  // infrared LED sensor data
 uint32_t aun_red_buffer[BUFFER_SIZE]; // red LED sensor data
-float old_n_spo2;                     // Previous SPO2 value
+
+
 uint8_t uch_dummy;
 bool showMeasuring = false;
 Ticker timer_hr_ox_read;
@@ -105,6 +106,7 @@ void oled_init(int font_size)
 
 void wifi_init(void)
 {
+    int cnt = 0;
     WiFi.begin(ssid, password);//启动网络连接
 
     print_serial_log(LOG_INFO, String("Connect WiFi SSID: ") + String(ssid));
@@ -115,6 +117,11 @@ void wifi_init(void)
         delay(500);
         oled.print('.');
         oled.display();
+        if (cnt++ > 30)
+        {
+            print_serial_log(LOG_ERR, "cannot connect to Wifi");
+            break;
+        }
     }
 
     print_serial_log(LOG_INFO, "successfully connect Wifi");
@@ -161,7 +168,6 @@ void heart_rate_and_ox_sensor_init(void)
 
     // timer_hr_ox_read.attach_ms(100, update_heart_rate_and_ox_sensor);
 
-    old_n_spo2 = 0.0;
     timeStart = millis();
 }
 
@@ -204,8 +210,11 @@ void date_time_init(void)
 {
     print_serial_log(LOG_INFO, String("NTP Server: ") + String(DEFAULT_NTP_SERVER));
 
-    timeClient.begin(DEFAULT_PORT);
-    timeClient.setTimeOffset(28800); //+1区，偏移3600，+8区，偏移3600*8
+    if (WiFi.status() == WL_CONNECTED)
+    {
+        timeClient.begin(DEFAULT_PORT);
+        timeClient.setTimeOffset(28800); //+1区，偏移3600，+8区，偏移3600*8
+    }
 
     memset(&ptm, 0, sizeof(ptm));
     update_date_time();
@@ -225,6 +234,11 @@ String get_date_time(void)
 static void update_date_time(void)
 {
     print_serial_log(LOG_INFO, "updating date and time");
+    if (WiFi.status() != WL_CONNECTED)
+    {
+        return;
+    }
+
     if (!timeClient.update())
     {
         print_serial_log(LOG_WARN, "update date and time fail");
@@ -348,24 +362,15 @@ void update_heart_rate_and_ox_sensor(void)
         elapsedTime = millis() - timeStart;
         elapsedTime /= 1000; // Time in seconds
 
-        if (ch_hr_valid && ch_spo2_valid)
+        if (ch_spo2_valid)
         {
-            Serial.print(elapsedTime);
-            Serial.print("\t");
-            Serial.print(n_spo2);
-            Serial.print("\t");
-            Serial.print(n_heartrate, DEC);
-            Serial.print("\t");
-            Serial.print(ratio);
-            Serial.print("\t");
-            Serial.print(correl);
-            Serial.println("");
-
             // print_hr_spo2(n_heartrate, (int)(n_spo2+0.5));
-            old_n_spo2 = n_spo2;
-
-            status.hs_set_heart_rate(n_heartrate);
             status.hs_set_Oxygen_saturation(n_spo2);
+        }
+
+        if (ch_hr_valid)
+        {
+            status.hs_set_heart_rate(n_heartrate);
         }
     }
 
