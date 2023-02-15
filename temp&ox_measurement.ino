@@ -39,7 +39,6 @@ uint32_t aun_ir, aun_red;
 uint32_t aun_ir_buffer[BUFFER_SIZE];  // infrared LED sensor data
 uint32_t aun_red_buffer[BUFFER_SIZE]; // red LED sensor data
 
-
 uint8_t uch_dummy;
 bool showMeasuring = false;
 Ticker timer_hr_ox_read;
